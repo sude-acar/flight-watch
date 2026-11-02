@@ -50,3 +50,22 @@ def test_validation(client, body, code):
 def test_unknown_watch(client):
     assert client.put("/watches/999", json={"name": "x", "kind": "airport", "airport": "LTFM"}).status_code == 404
     assert client.delete("/watches/999").status_code == 404
+
+
+def test_aircraft_and_history(client, monkeypatch):
+    wid = client.post("/watches", json={"name": "IST", "kind": "airport", "airport": "LTFM"}).get_json()["id"]
+
+    r = client.get(f"/watches/{wid}/aircraft")
+    assert r.status_code == 200 and len(r.get_json()) == 2
+
+    r = client.get(f"/watches/{wid}/history")
+    assert r.status_code == 200 and len(r.get_json()) == 2
+    assert client.get(f"/watches/{wid}/history?limit=0").status_code == 422
+    assert client.get("/watches/999/aircraft").status_code == 404
+
+    from app import opensky
+
+    def down(watch):
+        raise opensky.OpenSkyError("timeout")
+    monkeypatch.setattr(opensky, "get_states", down)
+    assert client.get(f"/watches/{wid}/aircraft").status_code == 503

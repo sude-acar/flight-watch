@@ -1,15 +1,18 @@
-"""REST endpoints for /watches (create, list, read, update, delete).
+"""REST endpoints for /watches (create, list, read, update, delete)
+plus live aircraft and stored history for a watch.
 
 Status code rules:
   400 - body is not JSON, or a required field is missing
   422 - fields are present but a value is invalid (e.g. latitude 95)
   404 - no watch with that id
+  503 - OpenSky is unavailable
 """
 import re
 
 from flask import Blueprint, jsonify, request
 
-from .models import Watch, db
+from . import opensky
+from .models import AircraftSnapshot, Watch, db
 
 bp = Blueprint("watches", __name__, url_prefix="/watches")
 
@@ -120,3 +123,38 @@ def delete_watch(watch_id):
     db.session.delete(watch)
     db.session.commit()
     return "", 204
+
+
+@bp.get("/<int:watch_id>/aircraft")
+def watch_aircraft(watch_id):
+    """Live aircraft for a watch. Each fetch is stored as snapshots.
+
+    TODO(Enes): reuse snapshots younger than N seconds instead of calling
+    OpenSky every time (cache), to stay inside OpenSky's rate limits.
+    """
+    watch = db.session.get(Watch, watch_id)
+    if watch is None:
+        return error("watch not found", 404)
+    try:
+        states = opensky.get_states(watch)
+    except opensky.OpenSkyError as exc:
+        return error(f"OpenSky unavailable: {exc}", 503)
+
+    snapshots = [AircraftSnapshot(watch_id=watch.id, **s) for s in states]
+    db.session.add_all(snapshots)
+    db.session.commit()
+    return jsonify([s.to_dict() for s in snapshots]), 200
+
+
+@bp.get("/<int:watch_id>/history")
+def watch_history(watch_id):
+    """Stored snapshots for a watch, newest first. `?limit=` caps the count (default 100, max 1000)."""
+    watch = db.session.get(Watch, watch_id)
+    if watch is None:
+        return error("watch not found", 404)
+    limit = request.args.get("limit", 100, type=int)
+    if limit is None or not 1 <= limit <= 1000:
+        return error("limit must be between 1 and 1000", 422)
+    rows = (AircraftSnapshot.query.filter_by(watch_id=watch.id)
+            .order_by(AircraftSnapshot.fetched_at.desc()).limit(limit).all())
+    return jsonify([r.to_dict() for r in rows]), 200

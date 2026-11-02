@@ -4,8 +4,8 @@ Cloud-based airspace monitoring service (DSAI523 mini project).
 Users save **watches** on an airport, an area (bounding box) or a single aircraft,
 and the app returns live traffic from the OpenSky Network, stored in a cloud database.
 
-> Status: week 1 skeleton — `/watches` CRUD works locally with SQLite.
-> OpenSky integration, Cloud SQL and GKE are coming next.
+> Status: week 1 — all endpoints work locally with SQLite. `/aircraft` returns
+> **mock** data until the real OpenSky client lands. Cloud SQL and GKE come next.
 
 ## Run locally
 
@@ -26,8 +26,8 @@ cp .env.example .env
 | GET /watches/{id} | Read one watch | 200, 404 |
 | PUT /watches/{id} | Update a watch | 200, 400, 404, 422 |
 | DELETE /watches/{id} | Delete a watch | 204, 404 |
-| GET /watches/{id}/aircraft | Live aircraft (todo) | 200, 404, 503 |
-| GET /watches/{id}/history | Stored snapshots (todo) | 200, 404 |
+| GET /watches/{id}/aircraft | Live aircraft (mock data for now) | 200, 404, 503 |
+| GET /watches/{id}/history?limit=100 | Stored snapshots, newest first | 200, 404, 422 |
 
 **400** = body is not JSON or a required field is missing.
 **422** = fields are present but a value is invalid.
@@ -52,6 +52,33 @@ cp .env.example .env
 ```
 app/__init__.py   app factory, config, error handlers
 app/models.py     database tables: watches, aircraft_snapshots
-app/watches.py    /watches CRUD endpoints and validation
+app/watches.py    /watches endpoints and validation
+app/opensky.py    OpenSky client (mock for now) - get_states(watch)
 tests/            pytest tests
 ```
+
+## Team and work split
+
+| Area | Owner |
+|---|---|
+| REST API, validation, status codes | Sude |
+| Cloud database (Cloud SQL PostgreSQL) | Sude |
+| OpenSky client and caching | Enes |
+| Docker, GKE, autoscaling (HPA), load test | Enes |
+| README and code documentation | Sude (lead), both |
+
+## Handoff: where Enes plugs in
+
+Everything is in place for the OpenSky and infrastructure work:
+
+1. **`app/opensky.py`** - replace the mock body of `get_states(watch)` with real
+   OpenSky calls. Keep the return shape (see the JSON above) and raise
+   `OpenSkyError` on failures; the endpoint already turns that into 503.
+   Put credentials in `.env` (never commit them) and add the names to `.env.example`.
+2. **Cache** - in `watch_aircraft()` (`app/watches.py`), reuse snapshots younger
+   than N seconds instead of calling OpenSky every time.
+3. **Infrastructure** - Dockerfile (gunicorn), GKE Autopilot deployment,
+   `Service type: LoadBalancer`, HPA, Locust load test.
+
+Workflow: one branch per feature, open a pull request, the other person reviews.
+Run `.venv/bin/pytest -q` before pushing.
