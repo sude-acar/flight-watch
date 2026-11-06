@@ -21,6 +21,7 @@ cp .env.example .env
 
 | Method + path | Purpose | Status codes |
 |---|---|---|
+| GET /health | App and database status (`database`: sqlite or postgresql) | 200, 503 |
 | POST /watches | Create a watch | 201, 400, 422 |
 | GET /watches | List watches | 200 |
 | GET /watches/{id} | Read one watch | 200, 404 |
@@ -79,6 +80,18 @@ Everything is in place for the OpenSky and infrastructure work:
    than N seconds instead of calling OpenSky every time.
 3. **Infrastructure** - Dockerfile (gunicorn), GKE Autopilot deployment,
    `Service type: LoadBalancer`, HPA, Locust load test.
+
+## Configuration rule
+
+The database address is never written in code. It comes only from `DATABASE_URL`
+(`.env` locally, a Kubernetes Secret on GKE). Same for OpenSky credentials.
+
+## Release checklist (before every deploy)
+
+1. Tests pass: `.venv/bin/pytest -q`
+2. No secrets in the code or in git (`git diff` / `git log -p` show no passwords or tokens)
+3. Right database: after deploy, `GET /health` shows `"database": "postgresql"`
+4. Cost: when the work session ends, stop Cloud SQL and scale the GKE deployment to 0
 
 Workflow: one branch per feature, open a pull request, the other person reviews.
 Run `.venv/bin/pytest -q` before pushing.

@@ -7,6 +7,7 @@ import os
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify
+from sqlalchemy import text
 
 from .models import db
 
@@ -26,6 +27,19 @@ def create_app(config=None):
 
     from .watches import bp as watches_bp
     app.register_blueprint(watches_bp)
+
+    @app.get("/health")
+    def health():
+        """Is the app up and can it reach its database?
+
+        Used by Kubernetes probes and to check after a deploy which database
+        the app is connected to (sqlite locally, postgresql on Cloud SQL).
+        """
+        try:
+            db.session.execute(text("SELECT 1"))
+        except Exception:
+            return jsonify(status="error", database=db.engine.dialect.name), 503
+        return jsonify(status="ok", database=db.engine.dialect.name), 200
 
     # Return JSON (not HTML) for errors Flask raises itself, e.g. unknown URLs.
     @app.errorhandler(404)

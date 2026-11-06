@@ -69,3 +69,9 @@ def test_aircraft_and_history(client, monkeypatch):
         raise opensky.OpenSkyError("timeout")
     monkeypatch.setattr(opensky, "get_states", down)
     assert client.get(f"/watches/{wid}/aircraft").status_code == 503
+
+
+def test_health(client):
+    r = client.get("/health")
+    assert r.status_code == 200
+    assert r.get_json() == {"status": "ok", "database": "sqlite"}
