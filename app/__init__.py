@@ -19,6 +19,8 @@ def create_app(config=None):
     load_dotenv()
     app = Flask(__name__)
     app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///flightwatch.db")
+    # Reuse an OpenSky fetch for this many seconds (0 = no cache).
+    app.config["OPENSKY_CACHE_SECONDS"] = int(os.getenv("OPENSKY_CACHE_SECONDS", "15"))
     if config:
         app.config.update(config)
 
@@ -26,6 +28,11 @@ def create_app(config=None):
 
     from .watches import bp as watches_bp
     app.register_blueprint(watches_bp)
+
+    # Liveness/readiness probe for Kubernetes; does not touch the database.
+    @app.get("/healthz")
+    def healthz():
+        return jsonify(status="ok"), 200
 
     # Return JSON (not HTML) for errors Flask raises itself, e.g. unknown URLs.
     @app.errorhandler(404)

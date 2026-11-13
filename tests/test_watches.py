@@ -4,9 +4,21 @@ import pytest
 from app import create_app
 
 
+FAKE_STATES = [
+    {"icao24": "4baa4e", "callsign": "THY7AB", "lat": 41.26, "lon": 28.74,
+     "altitude": 3200.0, "velocity": 140.0},
+    {"icao24": "4bb1c2", "callsign": "PGT2KD", "lat": 40.90, "lon": 29.31,
+     "altitude": 1500.0, "velocity": 95.0},
+]
+
+
 @pytest.fixture
-def client():
-    app = create_app({"SQLALCHEMY_DATABASE_URI": "sqlite:///:memory:", "TESTING": True})
+def client(monkeypatch):
+    """Test client with an in-memory DB, no OpenSky cache and a fake OpenSky."""
+    from app import opensky
+    monkeypatch.setattr(opensky, "get_states", lambda watch: [dict(s) for s in FAKE_STATES])
+    app = create_app({"SQLALCHEMY_DATABASE_URI": "sqlite:///:memory:", "TESTING": True,
+                      "OPENSKY_CACHE_SECONDS": 0})
     return app.test_client()
 
 
