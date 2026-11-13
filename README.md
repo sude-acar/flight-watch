@@ -4,8 +4,8 @@ Cloud-based airspace monitoring service (DSAI523 mini project).
 Users save **watches** on an airport, an area (bounding box) or a single aircraft,
 and the app returns live traffic from the OpenSky Network, stored in a cloud database.
 
-> Status: week 1 — all endpoints work locally with SQLite. `/aircraft` returns
-> **mock** data until the real OpenSky client lands. Cloud SQL and GKE come next.
+> Status: week 2 — all endpoints work locally (SQLite) and against Cloud SQL.
+> `/aircraft` returns **mock** data until the real OpenSky client lands. GKE comes next.
 
 ## Run locally
 
@@ -80,6 +80,25 @@ Everything is in place for the OpenSky and infrastructure work:
    than N seconds instead of calling OpenSky every time.
 3. **Infrastructure** - Dockerfile (gunicorn), GKE Autopilot deployment,
    `Service type: LoadBalancer`, HPA, Locust load test.
+
+## Cloud SQL
+
+| | |
+|---|---|
+| GCP project | `dsai523-510708` |
+| Instance | `flightwatch-db` (PostgreSQL 16, `db-f1-micro`, `europe-west1`) |
+| Database / user | `flightwatch` / `flightwatch` |
+
+The app connects with the [Cloud SQL Python Connector](https://github.com/GoogleCloudPlatform/cloud-sql-python-connector)
+when `INSTANCE_CONNECTION_NAME` is set (see `.env.example`); otherwise it uses `DATABASE_URL`.
+Locally, run `gcloud auth application-default login` once.
+
+The instance is **stopped when not in use** to save credits:
+
+```bash
+gcloud sql instances patch flightwatch-db --activation-policy=ALWAYS   # start (~1-2 min)
+gcloud sql instances patch flightwatch-db --activation-policy=NEVER    # stop
+```
 
 ## Configuration rule
 
