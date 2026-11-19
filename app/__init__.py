@@ -59,10 +59,12 @@ def create_app(config=None):
     # Return JSON (not HTML) for errors Flask raises itself, e.g. unknown URLs.
     @app.errorhandler(404)
     def not_found(_):
+        """Unknown URL: answer with JSON instead of Flask's HTML page."""
         return jsonify(error="not found"), 404
 
     @app.errorhandler(405)
     def method_not_allowed(_):
+        """Known URL but wrong HTTP method, e.g. PATCH /watches."""
         return jsonify(error="method not allowed"), 405
 
     with app.app_context():
@@ -79,6 +81,7 @@ def _cloud_sql_creator(instance):
     connector = Connector()
 
     def connect():
+        """Open one connection to the Cloud SQL instance."""
         return connector.connect(
             instance, "pg8000",
             user=os.environ["DB_USER"],

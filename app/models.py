@@ -11,6 +11,7 @@ db = SQLAlchemy()
 
 
 def utcnow():
+    """Current time in UTC, used as the default for timestamps."""
     return datetime.now(timezone.utc)
 
 
@@ -67,6 +68,7 @@ class AircraftSnapshot(db.Model):
     fetched_at = db.Column(db.DateTime(timezone=True), default=utcnow, index=True)
 
     def to_dict(self):
+        """JSON shape returned by the API (same fields as the OpenSky client)."""
         return {"icao24": self.icao24, "callsign": self.callsign, "lat": self.lat,
                 "lon": self.lon, "altitude": self.altitude, "velocity": self.velocity,
                 "time": self.fetched_at.isoformat() if self.fetched_at else None}

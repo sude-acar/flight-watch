@@ -24,6 +24,7 @@ ICAO24_RE = re.compile(r"^[0-9a-f]{6}$")
 
 
 def error(message, code):
+    """Build a JSON error response: {"error": message} with the given status code."""
     return jsonify(error=message), code
 
 
@@ -80,6 +81,7 @@ def validate(body):
 
 @bp.post("")
 def create_watch():
+    """POST /watches - validate the body and save a new watch (201)."""
     fields, err = validate(request.get_json(silent=True))
     if err:
         return error(*err)
@@ -91,12 +93,14 @@ def create_watch():
 
 @bp.get("")
 def list_watches():
+    """GET /watches - all watches, oldest first."""
     watches = Watch.query.order_by(Watch.id).all()
     return jsonify([w.to_dict() for w in watches]), 200
 
 
 @bp.get("/<int:watch_id>")
 def get_watch(watch_id):
+    """GET /watches/<id> - one watch, or 404."""
     watch = db.session.get(Watch, watch_id)
     if watch is None:
         return error("watch not found", 404)
@@ -105,6 +109,7 @@ def get_watch(watch_id):
 
 @bp.put("/<int:watch_id>")
 def update_watch(watch_id):
+    """PUT /watches/<id> - replace a watch with a new valid body."""
     watch = db.session.get(Watch, watch_id)
     if watch is None:
         return error("watch not found", 404)
@@ -119,6 +124,7 @@ def update_watch(watch_id):
 
 @bp.delete("/<int:watch_id>")
 def delete_watch(watch_id):
+    """DELETE /watches/<id> - remove a watch and its snapshots (204)."""
     watch = db.session.get(Watch, watch_id)
     if watch is None:
         return error("watch not found", 404)

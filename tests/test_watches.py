@@ -23,6 +23,7 @@ def client(monkeypatch):
 
 
 def test_crud_flow(client):
+    """Create, read, list, update and delete one watch."""
     r = client.post("/watches", json={"name": "Istanbul Airport", "kind": "airport", "airport": "ltfm"})
     assert r.status_code == 201
     wid = r.get_json()["id"]
@@ -39,6 +40,7 @@ def test_crud_flow(client):
 
 
 def test_bbox_ok(client):
+    """A valid bounding box watch is accepted."""
     r = client.post("/watches", json={"name": "Marmara", "kind": "bbox",
                                       "bbox": {"lamin": 40.0, "lomin": 26.0, "lamax": 41.5, "lomax": 30.0}})
     assert r.status_code == 201
@@ -55,16 +57,19 @@ def test_bbox_ok(client):
       "bbox": {"lamin": 95, "lomin": 26, "lamax": 96, "lomax": 30}}, 422),  # lat > 90
 ])
 def test_validation(client, body, code):
+    """Bad bodies get 400 (missing/broken) or 422 (invalid value)."""
     r = client.post("/watches", json=body) if body is not None else client.post("/watches", data="nope")
     assert r.status_code == code
 
 
 def test_unknown_watch(client):
+    """Update and delete on a missing id give 404."""
     assert client.put("/watches/999", json={"name": "x", "kind": "airport", "airport": "LTFM"}).status_code == 404
     assert client.delete("/watches/999").status_code == 404
 
 
 def test_aircraft_and_history(client, monkeypatch):
+    """Aircraft are stored as snapshots; OpenSky down gives 503."""
     wid = client.post("/watches", json={"name": "IST", "kind": "airport", "airport": "LTFM"}).get_json()["id"]
 
     r = client.get(f"/watches/{wid}/aircraft")
@@ -78,12 +83,14 @@ def test_aircraft_and_history(client, monkeypatch):
     from app import opensky
 
     def down(watch):
+        """Fake OpenSky that always fails."""
         raise opensky.OpenSkyError("timeout")
     monkeypatch.setattr(opensky, "get_states", down)
     assert client.get(f"/watches/{wid}/aircraft").status_code == 503
 
 
 def test_health(client):
+    """/health reports the database type."""
     r = client.get("/health")
     assert r.status_code == 200
     assert r.get_json() == {"status": "ok", "database": "sqlite"}
