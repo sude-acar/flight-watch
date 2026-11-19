@@ -4,9 +4,9 @@ Cloud-based airspace monitoring service (DSAI523 mini project).
 Users save **watches** on an airport, an area (bounding box) or a single aircraft,
 and the app returns live traffic from the OpenSky Network, stored in a cloud database.
 
-> Status: week 2 — all endpoints work locally with SQLite. `/aircraft` returns
-> **live** OpenSky data with a short database-backed cache. Docker image, GKE
-> manifests and a Locust load test are in the repo; Cloud SQL comes next.
+> Status: week 3 — all endpoints work locally (SQLite) and against Cloud SQL.
+> `/aircraft` returns **live** OpenSky data with a short database-backed cache.
+> Docker image, GKE manifests and a Locust load test are in the repo; GKE deploy comes next.
 
 ## Run locally
 
@@ -105,7 +105,10 @@ gcloud container clusters create-auto flightwatch --region=REGION
 gcloud container clusters get-credentials flightwatch --region=REGION
 
 # 3. Secrets (never commit these)
-kubectl create secret generic flightwatch-secrets   --from-literal=DATABASE_URL='postgresql+psycopg://USER:PASSWORD@HOST:5432/flightwatch'   --from-literal=OPENSKY_CLIENT_ID='...' --from-literal=OPENSKY_CLIENT_SECRET='...'
+kubectl create secret generic flightwatch-secrets \
+  --from-literal=INSTANCE_CONNECTION_NAME='dsai523-510708:europe-west1:flightwatch-db' \
+  --from-literal=DB_USER='flightwatch' --from-literal=DB_PASSWORD='...' --from-literal=DB_NAME='flightwatch' \
+  --from-literal=OPENSKY_CLIENT_ID='...' --from-literal=OPENSKY_CLIENT_SECRET='...'
 
 # 4. Deploy and get the public IP (EXTERNAL-IP can take a minute)
 kubectl apply -f k8s/
@@ -113,9 +116,9 @@ kubectl get service flightwatch
 curl http://EXTERNAL_IP/healthz
 ```
 
-Pods need a shared database: on GKE `DATABASE_URL` must point at Cloud SQL
-(SQLite would give every pod its own file). The Postgres driver and Cloud SQL
-connection are part of the Cloud SQL work.
+Pods need a shared database: on GKE the app must use Cloud SQL
+(SQLite would give every pod its own file). The pods also need permission to
+open Cloud SQL connections (Workload Identity, `roles/cloudsql.client`).
 
 The HPA keeps average CPU near 60 % of the 250m request with 2–10 pods.
 Watch it during a load test with `kubectl get hpa flightwatch --watch`.
@@ -130,9 +133,29 @@ locust -f loadtest/locustfile.py --host http://EXTERNAL_IP   --headless -u 100 -
 All simulated users share three watches created at test start, so OpenSky is
 called at most once per watch per cache window and its daily limit is safe.
 
+## Cloud SQL
+
+| | |
+|---|---|
+| GCP project | `dsai523-510708` |
+| Instance | `flightwatch-db` (PostgreSQL 16, `db-f1-micro`, `europe-west1`) |
+| Database / user | `flightwatch` / `flightwatch` |
+
+When `INSTANCE_CONNECTION_NAME` is set (see `.env.example`), the app connects with the
+[Cloud SQL Python Connector](https://github.com/GoogleCloudPlatform/cloud-sql-python-connector);
+otherwise it uses `DATABASE_URL`. The connector authorises with Google credentials, so
+there is no IP allow-list or proxy. Locally, run `gcloud auth application-default login` once.
+
+The instance is **stopped when not in use** to save credits:
+
+```bash
+gcloud sql instances patch flightwatch-db --activation-policy=ALWAYS   # start (~1-2 min)
+gcloud sql instances patch flightwatch-db --activation-policy=NEVER    # stop
+```
+
 ## Configuration rule
 
-The database address is never written in code. It comes only from `DATABASE_URL`
+The database address is never written in code. It comes only from environment variables (`DATABASE_URL` or the Cloud SQL settings)
 (`.env` locally, a Kubernetes Secret on GKE). Same for OpenSky credentials.
 
 ## Release checklist (before every deploy)

@@ -4,4 +4,5 @@ python-dotenv>=1.0
 requests>=2.31
 airportsdata>=20240101
 gunicorn>=22.0
+cloud-sql-python-connector[pg8000]>=1.12
 pytest>=8.0
