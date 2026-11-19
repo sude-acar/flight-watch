@@ -19,14 +19,7 @@ def create_app(config=None):
     """
     load_dotenv()
     app = Flask(__name__)
-    instance = os.getenv("INSTANCE_CONNECTION_NAME")
-    if instance:
-        # Cloud SQL: connect through the Cloud SQL Python Connector, which opens
-        # an encrypted, IAM-authorised connection (no IP allow-list, no proxy).
-        app.config["SQLALCHEMY_DATABASE_URI"] = "postgresql+pg8000://"
-        app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"creator": _cloud_sql_creator(instance)}
-    else:
-        app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///flightwatch.db")
+    app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///flightwatch.db")
     if config:
         app.config.update(config)
 
@@ -62,19 +55,3 @@ def create_app(config=None):
         db.create_all()
 
     return app
-
-
-def _cloud_sql_creator(instance):
-    """Return a function that opens a new Cloud SQL connection (used by SQLAlchemy's pool)."""
-    from google.cloud.sql.connector import Connector
-
-    connector = Connector()
-
-    def connect():
-        return connector.connect(
-            instance, "pg8000",
-            user=os.environ["DB_USER"],
-            password=os.environ["DB_PASSWORD"],
-            db=os.environ["DB_NAME"],
-        )
-    return connect
