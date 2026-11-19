@@ -8,6 +8,17 @@ and the app returns live traffic from the OpenSky Network, stored in a cloud dat
 > `/aircraft` returns **live** OpenSky data with a short database-backed cache.
 > Docker image, GKE manifests and a Locust load test are in the repo; GKE deploy comes next.
 
+## Architecture
+
+```
+user ──HTTP──> load balancer ──> Flask pods on GKE (autoscaled) ──> Cloud SQL (PostgreSQL)
+                                          │
+                                          └──> OpenSky Network API
+```
+
+The pods are stateless. Watches and aircraft snapshots live in Cloud SQL, which also
+acts as the cache for OpenSky responses, so every pod sees the same data.
+
 ## Run locally
 
 ```bash
