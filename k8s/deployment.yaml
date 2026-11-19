@@ -1,0 +1,36 @@
+# Flight Watch API pods. Image and secret names are set up in README "Deploy to GKE".
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flightwatch
+  labels: {app: flightwatch}
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: flightwatch}
+  template:
+    metadata:
+      labels: {app: flightwatch}
+    spec:
+      containers:
+        - name: api
+          image: REGION-docker.pkg.dev/PROJECT_ID/flightwatch/api:v1   # replace REGION and PROJECT_ID
+          ports:
+            - containerPort: 8080
+          env:
+            - name: OPENSKY_CACHE_SECONDS
+              value: "15"
+          envFrom:
+            - secretRef:
+                name: flightwatch-secrets    # DATABASE_URL, OPENSKY_CLIENT_ID, OPENSKY_CLIENT_SECRET
+          resources:                         # HPA scales on CPU relative to this request
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            initialDelaySeconds: 15
+            periodSeconds: 20

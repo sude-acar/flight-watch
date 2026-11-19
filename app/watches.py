@@ -8,11 +8,13 @@ Status code rules:
   503 - OpenSky is unavailable
 """
 import re
+from datetime import datetime, timedelta, timezone
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
+from sqlalchemy import func
 
 from . import opensky
-from .models import AircraftSnapshot, Watch, db
+from .models import AircraftSnapshot, Watch, db, utcnow
 
 bp = Blueprint("watches", __name__, url_prefix="/watches")
 
@@ -125,25 +127,54 @@ def delete_watch(watch_id):
     return "", 204
 
 
+def cached_snapshots(watch):
+    """Snapshots of the latest fetch for `watch` if it is younger than
+    OPENSKY_CACHE_SECONDS, else None. The cache lives in the database, so it is
+    shared by every pod behind the load balancer.
+
+    A fetch that returned no aircraft stores no rows, so it is not cached.
+    """
+    max_age = current_app.config["OPENSKY_CACHE_SECONDS"]
+    if max_age <= 0:
+        return None
+    latest = (db.session.query(func.max(AircraftSnapshot.fetched_at))
+              .filter(AircraftSnapshot.watch_id == watch.id).scalar())
+    if latest is None:
+        return None
+    if isinstance(latest, str):          # SQLite returns MAX() of a datetime as text
+        latest = datetime.fromisoformat(latest)
+    aware = latest if latest.tzinfo else latest.replace(tzinfo=timezone.utc)
+    if utcnow() - aware > timedelta(seconds=max_age):
+        return None
+    return (AircraftSnapshot.query
+            .filter_by(watch_id=watch.id, fetched_at=latest).all())
+
+
 @bp.get("/<int:watch_id>/aircraft")
 def watch_aircraft(watch_id):
-    """Live aircraft for a watch. Each fetch is stored as snapshots.
-
-    TODO(Enes): reuse snapshots younger than N seconds instead of calling
-    OpenSky every time (cache), to stay inside OpenSky's rate limits.
-    """
+    """Live aircraft for a watch. Each OpenSky fetch is stored as snapshots;
+    a repeat request within OPENSKY_CACHE_SECONDS is served from those
+    snapshots instead (response header X-Cache: HIT / MISS)."""
     watch = db.session.get(Watch, watch_id)
     if watch is None:
         return error("watch not found", 404)
+
+    cached = cached_snapshots(watch)
+    if cached is not None:
+        return jsonify([s.to_dict() for s in cached]), 200, {"X-Cache": "HIT"}
+
     try:
         states = opensky.get_states(watch)
+    except opensky.UnknownAirportError as exc:
+        return error(str(exc), 422)
     except opensky.OpenSkyError as exc:
         return error(f"OpenSky unavailable: {exc}", 503)
 
-    snapshots = [AircraftSnapshot(watch_id=watch.id, **s) for s in states]
+    now = utcnow()   # one timestamp per fetch, so the batch can be found again
+    snapshots = [AircraftSnapshot(watch_id=watch.id, fetched_at=now, **s) for s in states]
     db.session.add_all(snapshots)
     db.session.commit()
-    return jsonify([s.to_dict() for s in snapshots]), 200
+    return jsonify([s.to_dict() for s in snapshots]), 200, {"X-Cache": "MISS"}
 
 
 @bp.get("/<int:watch_id>/history")
