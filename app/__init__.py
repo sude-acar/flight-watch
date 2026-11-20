@@ -38,6 +38,11 @@ def create_app(config=None):
     from .watches import bp as watches_bp
     app.register_blueprint(watches_bp)
 
+    @app.get("/")
+    def index():
+        """Map page (app/static/index.html): a small UI on top of the API."""
+        return app.send_static_file("index.html")
+
     # Liveness/readiness probe for Kubernetes; does not touch the database.
     @app.get("/healthz")
     def healthz():

@@ -25,7 +25,7 @@ acts as the cache for OpenSky responses, so every pod sees the same data.
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp .env.example .env
-.venv/bin/python run.py          # http://localhost:5001
+.venv/bin/python run.py          # map page: http://localhost:5001
 .venv/bin/pytest -q              # run tests
 ```
 
@@ -33,6 +33,7 @@ cp .env.example .env
 
 | Method + path | Purpose | Status codes |
 |---|---|---|
+| GET / | Map page: list/add/delete watches, live aircraft on a map | 200 |
 | GET /health | App and database status (`database`: sqlite or postgresql) | 200, 503 |
 | POST /watches | Create a watch | 201, 400, 422 |
 | GET /watches | List watches | 200 |
@@ -69,6 +70,7 @@ code we have no coordinates for).
 app/__init__.py   app factory, config, error handlers
 app/models.py     database tables: watches, aircraft_snapshots
 app/watches.py    /watches endpoints and validation
+app/static/       map page (index.html, Leaflet + OpenStreetMap)
 app/opensky.py    OpenSky client - get_states(watch), OAuth2 token, retries
 tests/            pytest tests (no network: OpenSky is faked)
 Dockerfile        gunicorn image, port 8080
