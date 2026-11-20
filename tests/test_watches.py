@@ -100,3 +100,18 @@ def test_map_page(client):
     """/ serves the map page."""
     r = client.get("/")
     assert r.status_code == 200 and b"Flight Watch" in r.data
+
+
+def test_delete_removes_snapshots(client):
+    """Deleting a watch also deletes its stored aircraft, and only its own."""
+    keep = client.post("/watches", json={"name": "keep", "kind": "airport", "airport": "LTFJ"}).get_json()["id"]
+    gone = client.post("/watches", json={"name": "gone", "kind": "airport", "airport": "LTFM"}).get_json()["id"]
+    for wid in (keep, gone, gone):
+        client.get(f"/watches/{wid}/aircraft")
+
+    assert client.delete(f"/watches/{gone}").status_code == 204
+
+    from app.models import AircraftSnapshot
+    with client.application.app_context():
+        assert AircraftSnapshot.query.filter_by(watch_id=gone).count() == 0
+        assert AircraftSnapshot.query.filter_by(watch_id=keep).count() == 2

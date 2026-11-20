@@ -26,7 +26,15 @@
     li.active { background: #dbe7f5; font-weight: 600; }
     li small { color: #777; font-weight: normal; }
     li button { border: 0; background: none; color: #999; cursor: pointer; font-size: 16px; }
-    li button:hover { color: #c00; }
+    li button:hover, li button.armed { color: #c00; }
+    li button.armed { font-size: 12px; font-weight: 600; }
+    .draw { padding: 6px; border: 1px dashed #1f4e79; border-radius: 5px; background: #fff; color: #1f4e79; font: inherit; cursor: pointer; }
+    .draw.on { background: #1f4e79; color: #fff; }
+    .drawing, .drawing * { cursor: crosshair !important; }
+    .label { font-size: 12px; color: #777; margin: 4px 0 6px; }
+    .examples { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+    .examples button { padding: 4px 8px; border: 1px solid #c9d6e6; border-radius: 12px; background: #f3f7fc; color: #1f4e79; font: inherit; font-size: 12px; cursor: pointer; }
+    .examples button:hover { background: #dbe7f5; }
     form { display: grid; gap: 6px; }
     input, select { padding: 6px 8px; border: 1px solid #ccc; border-radius: 5px; font: inherit; }
     .row { display: flex; gap: 6px; }
@@ -46,10 +54,13 @@
     <h1>✈ Flight Watch</h1>
     <div class="sub">Pick a watch to see live aircraft. Refreshes every 15 s.</div>
 
-    <h2>Watches</h2>
+    <h2>Saved watches</h2>
     <ul id="watches"><li><small>loading…</small></li></ul>
 
     <h2>New watch</h2>
+    <div class="label">Presets</div>
+    <div class="examples" id="examples"></div>
+    <div class="label">Or enter your own</div>
     <form id="new">
       <input name="name" placeholder="Name, e.g. Istanbul Airport" required>
       <select name="kind">
@@ -59,6 +70,7 @@
       </select>
       <input name="airport" placeholder="ICAO airport code, e.g. LTFM">
       <input name="icao24" placeholder="ICAO24 hex, e.g. 4baa4e" hidden>
+      <button type="button" id="draw" class="draw" data-bbox hidden>▭ Draw area on map</button>
       <div class="row" data-bbox hidden><input name="lamin" placeholder="lat min"><input name="lamax" placeholder="lat max"></div>
       <div class="row" data-bbox hidden><input name="lomin" placeholder="lon min"><input name="lomax" placeholder="lon max"></div>
       <button>Add watch</button>
@@ -99,7 +111,15 @@ async function loadWatches() {
     const del = document.createElement("button");
     del.textContent = "×";
     del.title = "Delete watch";
-    del.onclick = (e) => { e.stopPropagation(); removeWatch(w); };
+    // First click asks, second click deletes (browser confirm() pop-ups are blocked in some viewers).
+    del.onclick = (e) => {
+      e.stopPropagation();
+      if (del.dataset.armed) return removeWatch(w);
+      del.dataset.armed = "1";
+      del.textContent = "Delete?";
+      del.classList.add("armed");
+      setTimeout(() => { delete del.dataset.armed; del.textContent = "×"; del.classList.remove("armed"); }, 5000);
+    };
     li.appendChild(del);
     li.onclick = () => select(w);
     list.appendChild(li);
@@ -107,7 +127,7 @@ async function loadWatches() {
 }
 
 async function removeWatch(w) {
-  if (!confirm(`Delete "${w.name}"?`)) return;
+  say(`Deleting "${w.name}"…`);
   const res = await fetch(`/watches/${w.id}`, { method: "DELETE" });
   if (res.status === 204) {
     if (selected && selected.id === w.id) { selected = null; planes.clearLayers(); clearArea(); clearInterval(timer); }
@@ -168,7 +188,57 @@ form.kind.onchange = () => {
   form.querySelectorAll("[data-bbox]").forEach((el) => el.hidden = k !== "bbox");
 };
 
-form.onsubmit = async (e) => {
+// --- draw an area on the map -------------------------------------------------
+// Press the button, then press, drag and release on the map. The rectangle fills
+// the lat/lon boxes, which stay editable.
+let drawing = false, start = null, drawn = null;
+
+$("draw").onclick = () => {
+  drawing = !drawing;
+  $("draw").classList.toggle("on", drawing);
+  $("draw").textContent = drawing ? "Drag on the map… (click to cancel)" : "▭ Draw area on map";
+  map.getContainer().classList.toggle("drawing", drawing);
+  drawing ? map.dragging.disable() : map.dragging.enable();
+};
+
+map.on("mousedown", (e) => {
+  if (!drawing) return;
+  start = e.latlng;
+  if (drawn) map.removeLayer(drawn);
+  drawn = L.rectangle([start, start], { color: "#1f4e79", weight: 2, dashArray: "4" }).addTo(map);
+});
+
+map.on("mousemove", (e) => {
+  if (drawing && start) drawn.setBounds([start, e.latlng]);
+});
+
+map.on("mouseup", (e) => {
+  if (!drawing || !start) return;
+  const b = L.latLngBounds(start, e.latlng);
+  start = null;
+  const r = (x) => x.toFixed(3);
+  form.lamin.value = r(b.getSouth()); form.lamax.value = r(b.getNorth());
+  form.lomin.value = r(b.getWest());  form.lomax.value = r(b.getEast());
+  $("draw").onclick();   // leave drawing mode, keep the rectangle visible
+});
+
+function clearDrawn() { if (drawn) { map.removeLayer(drawn); drawn = null; } }
+
+// One-click examples for the demo; they go through the same POST /watches.
+const EXAMPLES = [
+  { label: "Istanbul Airport", body: { name: "Istanbul Airport", kind: "airport", airport: "LTFM" } },
+  { label: "Sabiha Gökçen", body: { name: "Sabiha Gökçen", kind: "airport", airport: "LTFJ" } },
+  { label: "Marmara area", body: { name: "Marmara area", kind: "bbox",
+      bbox: { lamin: 40.0, lomin: 26.0, lamax: 41.5, lomax: 30.0 } } },
+];
+for (const ex of EXAMPLES) {
+  const b = document.createElement("button");
+  b.textContent = "+ " + ex.label;
+  b.onclick = () => createWatch(ex.body);
+  $("examples").appendChild(b);
+}
+
+form.onsubmit = (e) => {
   e.preventDefault();
   const k = form.kind.value;
   const body = { name: form.name.value, kind: k };
@@ -178,12 +248,16 @@ form.onsubmit = async (e) => {
     lamin: Number(form.lamin.value), lomin: Number(form.lomin.value),
     lamax: Number(form.lamax.value), lomax: Number(form.lomax.value),
   };
+  createWatch(body);
+};
+
+async function createWatch(body) {
   const res = await fetch("/watches", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
   const data = await res.json();
   if (res.status === 201) {
-    form.reset(); form.kind.onchange();
+    form.reset(); form.kind.onchange(); clearDrawn();
     await loadWatches();
     select(data);
   } else {
