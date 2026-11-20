@@ -12,9 +12,10 @@ spec:
     metadata:
       labels: {app: flightwatch}
     spec:
+      serviceAccountName: flightwatch      # Workload Identity -> Cloud SQL access (k8s/serviceaccount.yaml)
       containers:
         - name: api
-          image: REGION-docker.pkg.dev/PROJECT_ID/flightwatch/api:v1   # replace REGION and PROJECT_ID
+          image: europe-west1-docker.pkg.dev/dsai523-510708/flightwatch/api:v1
           ports:
             - containerPort: 8080
           env:
@@ -22,7 +23,7 @@ spec:
               value: "15"
           envFrom:
             - secretRef:
-                name: flightwatch-secrets    # DATABASE_URL, OPENSKY_CLIENT_ID, OPENSKY_CLIENT_SECRET
+                name: flightwatch-secrets    # INSTANCE_CONNECTION_NAME, DB_*, OPENSKY_CLIENT_*
           resources:                         # HPA scales on CPU relative to this request
             requests: {cpu: 250m, memory: 512Mi}
             limits: {cpu: 500m, memory: 512Mi}

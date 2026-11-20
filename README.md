@@ -104,35 +104,74 @@ loadtest/         Locust load test
 
 ## Deploy to GKE (Autopilot)
 
-Replace `PROJECT_ID` and `REGION` (e.g. `europe-west1`); also in `k8s/deployment.yaml`.
+Project `dsai523-510708`, region `europe-west1` (same as Cloud SQL).
 
 ```bash
 # 1. Build and push the image to Artifact Registry
-gcloud artifacts repositories create flightwatch --repository-format=docker --location=REGION
-gcloud builds submit --tag REGION-docker.pkg.dev/PROJECT_ID/flightwatch/api:v1
+gcloud artifacts repositories create flightwatch --repository-format=docker --location=europe-west1
+gcloud builds submit --tag europe-west1-docker.pkg.dev/dsai523-510708/flightwatch/api:v1
 
-# 2. Create the cluster
-gcloud container clusters create-auto flightwatch --region=REGION
-gcloud container clusters get-credentials flightwatch --region=REGION
+# 2. Create the cluster (Autopilot has Workload Identity switched on)
+gcloud container clusters create-auto flightwatch --region=europe-west1
+gcloud container clusters get-credentials flightwatch --region=europe-west1
 
-# 3. Secrets (never commit these)
-kubectl create secret generic flightwatch-secrets \
-  --from-literal=INSTANCE_CONNECTION_NAME='dsai523-510708:europe-west1:flightwatch-db' \
-  --from-literal=DB_USER='flightwatch' --from-literal=DB_PASSWORD='...' --from-literal=DB_NAME='flightwatch' \
-  --from-literal=OPENSKY_CLIENT_ID='...' --from-literal=OPENSKY_CLIENT_SECRET='...'
+# 3. Workload Identity: let the Kubernetes service account `flightwatch`
+#    act as the Google service account `flightwatch-sql` (roles/cloudsql.client).
+#    Works only after the cluster exists (it creates the identity pool).
+gcloud iam service-accounts add-iam-policy-binding   flightwatch-sql@dsai523-510708.iam.gserviceaccount.com   --role=roles/iam.workloadIdentityUser   --member="serviceAccount:dsai523-510708.svc.id.goog[default/flightwatch]"
 
-# 4. Deploy and get the public IP (EXTERNAL-IP can take a minute)
+# 4. Secrets (never commit these)
+kubectl create secret generic flightwatch-secrets   --from-literal=INSTANCE_CONNECTION_NAME='dsai523-510708:europe-west1:flightwatch-db'   --from-literal=DB_USER='flightwatch' --from-literal=DB_PASSWORD='...' --from-literal=DB_NAME='flightwatch'   --from-literal=OPENSKY_CLIENT_ID='...' --from-literal=OPENSKY_CLIENT_SECRET='...'
+
+# 5. Deploy and get the public IP (EXTERNAL-IP can take a minute)
 kubectl apply -f k8s/
 kubectl get service flightwatch
-curl http://EXTERNAL_IP/healthz
+curl http://EXTERNAL_IP/health      # expect "database": "postgresql"
 ```
 
 Pods need a shared database: on GKE the app must use Cloud SQL
-(SQLite would give every pod its own file). The pods also need permission to
-open Cloud SQL connections (Workload Identity, `roles/cloudsql.client`).
+(SQLite would give every pod its own file).
+
+**Workload Identity** (how pods get into Cloud SQL without a key file):
+
+| Piece | Name | Status |
+|---|---|---|
+| Google service account | `flightwatch-sql@dsai523-510708.iam.gserviceaccount.com` | created |
+| Its project role | `roles/cloudsql.client` | granted |
+| Kubernetes service account | `flightwatch` (`k8s/serviceaccount.yaml`), used by the Deployment | in repo |
+| Link between the two | `roles/iam.workloadIdentityUser` (step 3) | granted (stays when the cluster is deleted) |
 
 The HPA keeps average CPU near 60 % of the 250m request with 2–10 pods.
 Watch it during a load test with `kubectl get hpa flightwatch --watch`.
+
+**Cost:** the cluster fee is covered by the GKE free tier (one Autopilot cluster per
+billing account); 2 pods + the load balancer are roughly $0.06/hour. Scaling to 0
+pods does not stop the load balancer or cluster fee, so delete the cluster after a session:
+`kubectl delete -f k8s/` then `gcloud container clusters delete flightwatch --region=europe-west1`.
+
+### Known issue: OpenSky blocks GCP (tested 2026-11-20)
+
+First deploy: pods started, Workload Identity worked and `/health` returned
+`"database": "postgresql"`, watch CRUD worked against Cloud SQL. But
+`/watches/{id}/aircraft` returned **503** (`OpenSky unavailable: ConnectTimeout`).
+
+From inside a pod, `www.google.com` and `api.github.com` answer, while
+`opensky-network.org` and `auth.opensky-network.org` time out at connection level.
+The same requests work from a home connection. OpenSky's API docs say they may block
+AWS and other hyperscalers' IP ranges because of abuse, so this is a deliberate
+block, not a bug in our client; API credentials will not help (the token server is
+blocked too). Proxies or VPNs to hide the origin are not an option: they go around
+OpenSky's policy and could get the account banned.
+
+Options under discussion:
+
+1. **Collector outside GCP** (proposed): a small script on a non-cloud machine calls
+   OpenSky for the active watches every N seconds and writes `aircraft_snapshots`
+   into Cloud SQL; GKE pods only read the database. Reuses `opensky.get_states()`.
+   Data is only fresh while the collector runs.
+2. **Ask OpenSky** for academic access from GCP (can run in parallel).
+3. **Another ADS-B source** (e.g. adsb.lol, airplanes.live, adsb.fi) behind
+   `get_states()`; terms and cloud access not checked yet.
 
 ## Load test (Locust)
 
