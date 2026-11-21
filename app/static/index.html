@@ -10,7 +10,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Flight Watch</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
   <style>
     * { box-sizing: border-box; }
     body { margin: 0; font-family: system-ui, sans-serif; color: #222; background: #f4f5f7; }
@@ -52,7 +53,7 @@
 <div class="layout">
   <aside>
     <h1>✈ Flight Watch</h1>
-    <div class="sub">Pick a watch to see live aircraft. Refreshes every 15 s.</div>
+    <div class="sub">Pick a watch to see live aircraft. Refreshes every 20 s.</div>
 
     <h2>Saved watches</h2>
     <ul id="watches"><li><small>loading…</small></li></ul>
@@ -81,14 +82,17 @@
   <div id="map"></div>
 </div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script>
 const map = L.map("map").setView([41.0, 29.0], 8);   // start over Istanbul
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  maxZoom: 18, attribution: "&copy; OpenStreetMap contributors"
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 18,
+  attribution: "&copy; OpenStreetMap contributors · Aircraft data: <a href=\"https://adsb.lol\">adsb.lol</a> (ODbL)"
 }).addTo(map);
 const planes = L.layerGroup().addTo(map);
 let area = null, selected = null, timer = null;
+const REFRESH_MS = 20000;   // the server cache (60 s on GKE) decides how often the flight data source is called
 
 const $ = (id) => document.getElementById(id);
 function say(text, isError) {
@@ -96,10 +100,33 @@ function say(text, isError) {
   $("status").className = isError ? "error" : "";
 }
 
+// fetch + JSON in one place. Throws an Error with a readable message when the
+// server can't be reached or answers with something that isn't JSON (e.g. the
+// load balancer's HTML 502 page while pods restart).
+async function api(url, options) {
+  let res;
+  try {
+    res = await fetch(url, options);
+  } catch {
+    throw new Error("Server unreachable");
+  }
+  if (res.status === 204) return { res, data: null };
+  try {
+    return { res, data: await res.json() };
+  } catch {
+    throw new Error(`Server unreachable (${res.status})`);
+  }
+}
+
 // --- watches list ---------------------------------------------------------
 async function loadWatches() {
-  const res = await fetch("/watches");
-  const watches = await res.json();
+  let watches;
+  try {
+    ({ data: watches } = await api("/watches"));
+  } catch (err) {
+    say(err.message, true);
+    return;
+  }
   const list = $("watches");
   list.innerHTML = "";
   if (!watches.length) list.innerHTML = "<li><small>No watches yet, add one below.</small></li>";
@@ -128,7 +155,13 @@ async function loadWatches() {
 
 async function removeWatch(w) {
   say(`Deleting "${w.name}"…`);
-  const res = await fetch(`/watches/${w.id}`, { method: "DELETE" });
+  let res;
+  try {
+    ({ res } = await api(`/watches/${w.id}`, { method: "DELETE" }));
+  } catch (err) {
+    say(err.message, true);
+    return;
+  }
   if (res.status === 204) {
     if (selected && selected.id === w.id) { selected = null; planes.clearLayers(); clearArea(); clearInterval(timer); }
     say(`Deleted "${w.name}".`);
@@ -150,19 +183,27 @@ function select(w) {
   }
   clearInterval(timer);
   showAircraft(true);
-  timer = setInterval(() => showAircraft(false), 15000);
+  timer = setInterval(() => { if (!document.hidden) showAircraft(false); }, REFRESH_MS);
 }
 
 function clearArea() { if (area) { map.removeLayer(area); area = null; } }
 
 async function showAircraft(fit) {
   if (!selected) return;
+  const id = selected.id;
   say("Loading aircraft…");
-  const res = await fetch(`/watches/${selected.id}/aircraft`);
-  const body = await res.json();
-  if (!res.ok) { say(`${res.status}: ${body.error}`, true); return; }
+  let res, body, failure = null;
+  try {
+    ({ res, data: body } = await api(`/watches/${id}/aircraft`));
+    if (!res.ok) failure = `${res.status}: ${body.error}`;
+  } catch (err) {
+    failure = err.message;
+  }
+  // The user may have picked another watch while this request was on its way.
+  if (!selected || selected.id !== id) return;
+  planes.clearLayers();   // never leave old aircraft that look live
+  if (failure) { say(failure, true); return; }
 
-  planes.clearLayers();
   for (const a of body) {
     if (a.lat == null || a.lon == null) continue;
     L.circleMarker([a.lat, a.lon], { radius: 6, color: "#c0392b", fillOpacity: 0.8 })
@@ -244,18 +285,27 @@ form.onsubmit = (e) => {
   const body = { name: form.name.value, kind: k };
   if (k === "airport") body.airport = form.airport.value;
   if (k === "aircraft") body.icao24 = form.icao24.value;
-  if (k === "bbox") body.bbox = {
-    lamin: Number(form.lamin.value), lomin: Number(form.lomin.value),
-    lamax: Number(form.lamax.value), lomax: Number(form.lomax.value),
-  };
+  if (k === "bbox") {
+    // Send only filled-in fields, so an empty box gets the server's clear
+    // "missing field" (400) instead of 0 and a confusing range error.
+    body.bbox = {};
+    for (const key of ["lamin", "lomin", "lamax", "lomax"]) {
+      if (form[key].value.trim() !== "") body.bbox[key] = Number(form[key].value);
+    }
+  }
   createWatch(body);
 };
 
 async function createWatch(body) {
-  const res = await fetch("/watches", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-  });
-  const data = await res.json();
+  let res, data;
+  try {
+    ({ res, data } = await api("/watches", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    }));
+  } catch (err) {
+    say(err.message, true);
+    return;
+  }
   if (res.status === 201) {
     form.reset(); form.kind.onchange(); clearDrawn();
     await loadWatches();
@@ -268,6 +318,11 @@ async function createWatch(body) {
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+
+// Refreshes pause while the tab is hidden; catch up as soon as it is visible again.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && selected) showAircraft(false);
+});
 
 loadWatches();
 </script>
