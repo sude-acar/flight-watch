@@ -27,7 +27,7 @@ acts as the cache for flight data responses, so every pod sees the same data.
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp .env.example .env
-.venv/bin/python run.py          # http://localhost:5001
+.venv/bin/python run.py          # map page: http://localhost:5001
 .venv/bin/pytest -q              # run tests
 ```
 
@@ -35,6 +35,7 @@ cp .env.example .env
 
 | Method + path | Purpose | Status codes |
 |---|---|---|
+| GET / | Map page: list/add/delete watches, live aircraft on a map | 200 |
 | GET /health | App and database status (`database`: sqlite or postgresql) | 200, 503 |
 | POST /watches | Create a watch | 201, 400, 422 |
 | GET /watches | List watches | 200 |
@@ -75,6 +76,7 @@ app/models.py     database tables: watches, aircraft_snapshots
 app/watches.py    /watches endpoints and validation
 app/flightdata.py picks the source (FLIGHT_SOURCE), shared errors, airport boxes
 app/adsblol.py    adsb.lol client (default) - get_states(watch), unit conversion
+app/static/       map page (index.html, Leaflet + OpenStreetMap)
 app/opensky.py    OpenSky client - get_states(watch), OAuth2 token, retries
 tests/            pytest tests (no network: flight data sources are faked)
 Dockerfile        gunicorn image, port 8080

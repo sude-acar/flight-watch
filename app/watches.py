@@ -128,6 +128,9 @@ def delete_watch(watch_id):
     watch = db.session.get(Watch, watch_id)
     if watch is None:
         return error("watch not found", 404)
+    # One DELETE for all snapshots; the ORM cascade would delete them row by row,
+    # one Cloud SQL round trip each, which got slow once a watch had hundreds.
+    AircraftSnapshot.query.filter_by(watch_id=watch.id).delete(synchronize_session=False)
     db.session.delete(watch)
     db.session.commit()
     return "", 204

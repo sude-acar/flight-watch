@@ -1,0 +1,330 @@
+<!doctype html>
+<!--
+  Flight Watch map page.
+  A small front end on top of the REST API: list and create watches, then show the
+  aircraft of the selected watch on a map. Everything goes through the same JSON
+  endpoints a script would use (/watches, /watches/{id}/aircraft).
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flight Watch</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, sans-serif; color: #222; background: #f4f5f7; }
+    .layout { display: flex; height: 100vh; }
+    aside { width: 300px; padding: 16px; background: #fff; border-right: 1px solid #ddd; overflow-y: auto; }
+    #map { flex: 1; }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    .sub { font-size: 13px; color: #666; margin-bottom: 16px; }
+    h2 { font-size: 14px; margin: 18px 0 8px; text-transform: uppercase; color: #555; }
+    ul { list-style: none; padding: 0; margin: 0; }
+    li { padding: 8px 10px; border-radius: 6px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+    li:hover { background: #eef2f7; }
+    li.active { background: #dbe7f5; font-weight: 600; }
+    li small { color: #777; font-weight: normal; }
+    li button { border: 0; background: none; color: #999; cursor: pointer; font-size: 16px; }
+    li button:hover, li button.armed { color: #c00; }
+    li button.armed { font-size: 12px; font-weight: 600; }
+    .draw { padding: 6px; border: 1px dashed #1f4e79; border-radius: 5px; background: #fff; color: #1f4e79; font: inherit; cursor: pointer; }
+    .draw.on { background: #1f4e79; color: #fff; }
+    .drawing, .drawing * { cursor: crosshair !important; }
+    .label { font-size: 12px; color: #777; margin: 4px 0 6px; }
+    .examples { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+    .examples button { padding: 4px 8px; border: 1px solid #c9d6e6; border-radius: 12px; background: #f3f7fc; color: #1f4e79; font: inherit; font-size: 12px; cursor: pointer; }
+    .examples button:hover { background: #dbe7f5; }
+    form { display: grid; gap: 6px; }
+    input, select { padding: 6px 8px; border: 1px solid #ccc; border-radius: 5px; font: inherit; }
+    .row { display: flex; gap: 6px; }
+    .row input { width: 50%; }
+    form > button { padding: 7px; border: 0; border-radius: 5px; background: #1f4e79; color: #fff; font: inherit; cursor: pointer; }
+    #status { font-size: 13px; margin-top: 14px; color: #444; min-height: 36px; }
+    #status.error { color: #b00; }
+    @media (max-width: 700px) {
+      .layout { flex-direction: column; }
+      aside { width: 100%; height: 45vh; border-right: 0; border-bottom: 1px solid #ddd; }
+    }
+  </style>
+</head>
+<body>
+<div class="layout">
+  <aside>
+    <h1>✈ Flight Watch</h1>
+    <div class="sub">Pick a watch to see live aircraft. Refreshes every 20 s.</div>
+
+    <h2>Saved watches</h2>
+    <ul id="watches"><li><small>loading…</small></li></ul>
+
+    <h2>New watch</h2>
+    <div class="label">Presets</div>
+    <div class="examples" id="examples"></div>
+    <div class="label">Or enter your own</div>
+    <form id="new">
+      <input name="name" placeholder="Name, e.g. Istanbul Airport" required>
+      <select name="kind">
+        <option value="airport">Airport</option>
+        <option value="bbox">Area (bounding box)</option>
+        <option value="aircraft">One aircraft</option>
+      </select>
+      <input name="airport" placeholder="ICAO airport code, e.g. LTFM">
+      <input name="icao24" placeholder="ICAO24 hex, e.g. 4baa4e" hidden>
+      <button type="button" id="draw" class="draw" data-bbox hidden>▭ Draw area on map</button>
+      <div class="row" data-bbox hidden><input name="lamin" placeholder="lat min"><input name="lamax" placeholder="lat max"></div>
+      <div class="row" data-bbox hidden><input name="lomin" placeholder="lon min"><input name="lomax" placeholder="lon max"></div>
+      <button>Add watch</button>
+    </form>
+
+    <div id="status"></div>
+  </aside>
+  <div id="map"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+const map = L.map("map").setView([41.0, 29.0], 8);   // start over Istanbul
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 18,
+  attribution: "&copy; OpenStreetMap contributors · Aircraft data: <a href=\"https://adsb.lol\">adsb.lol</a> (ODbL)"
+}).addTo(map);
+const planes = L.layerGroup().addTo(map);
+let area = null, selected = null, timer = null;
+const REFRESH_MS = 20000;   // the server cache (60 s on GKE) decides how often the flight data source is called
+
+const $ = (id) => document.getElementById(id);
+function say(text, isError) {
+  $("status").textContent = text;
+  $("status").className = isError ? "error" : "";
+}
+
+// fetch + JSON in one place. Throws an Error with a readable message when the
+// server can't be reached or answers with something that isn't JSON (e.g. the
+// load balancer's HTML 502 page while pods restart).
+async function api(url, options) {
+  let res;
+  try {
+    res = await fetch(url, options);
+  } catch {
+    throw new Error("Server unreachable");
+  }
+  if (res.status === 204) return { res, data: null };
+  try {
+    return { res, data: await res.json() };
+  } catch {
+    throw new Error(`Server unreachable (${res.status})`);
+  }
+}
+
+// --- watches list ---------------------------------------------------------
+async function loadWatches() {
+  let watches;
+  try {
+    ({ data: watches } = await api("/watches"));
+  } catch (err) {
+    say(err.message, true);
+    return;
+  }
+  const list = $("watches");
+  list.innerHTML = "";
+  if (!watches.length) list.innerHTML = "<li><small>No watches yet, add one below.</small></li>";
+  for (const w of watches) {
+    const li = document.createElement("li");
+    li.className = selected && selected.id === w.id ? "active" : "";
+    const what = w.kind === "airport" ? w.airport : w.kind === "aircraft" ? w.icao24 : "area";
+    li.innerHTML = `<span>${escapeHtml(w.name)} <small>${what}</small></span>`;
+    const del = document.createElement("button");
+    del.textContent = "×";
+    del.title = "Delete watch";
+    // First click asks, second click deletes (browser confirm() pop-ups are blocked in some viewers).
+    del.onclick = (e) => {
+      e.stopPropagation();
+      if (del.dataset.armed) return removeWatch(w);
+      del.dataset.armed = "1";
+      del.textContent = "Delete?";
+      del.classList.add("armed");
+      setTimeout(() => { delete del.dataset.armed; del.textContent = "×"; del.classList.remove("armed"); }, 5000);
+    };
+    li.appendChild(del);
+    li.onclick = () => select(w);
+    list.appendChild(li);
+  }
+}
+
+async function removeWatch(w) {
+  say(`Deleting "${w.name}"…`);
+  let res;
+  try {
+    ({ res } = await api(`/watches/${w.id}`, { method: "DELETE" }));
+  } catch (err) {
+    say(err.message, true);
+    return;
+  }
+  if (res.status === 204) {
+    if (selected && selected.id === w.id) { selected = null; planes.clearLayers(); clearArea(); clearInterval(timer); }
+    say(`Deleted "${w.name}".`);
+  } else {
+    say(`Delete failed (${res.status}).`, true);
+  }
+  loadWatches();
+}
+
+// --- aircraft on the map ----------------------------------------------------
+function select(w) {
+  selected = w;
+  loadWatches();
+  clearArea();
+  if (w.kind === "bbox") {
+    const b = w.bbox;
+    area = L.rectangle([[b.lamin, b.lomin], [b.lamax, b.lomax]], { color: "#1f4e79", weight: 1, fill: false }).addTo(map);
+    map.fitBounds(area.getBounds());
+  }
+  clearInterval(timer);
+  showAircraft(true);
+  timer = setInterval(() => { if (!document.hidden) showAircraft(false); }, REFRESH_MS);
+}
+
+function clearArea() { if (area) { map.removeLayer(area); area = null; } }
+
+async function showAircraft(fit) {
+  if (!selected) return;
+  const id = selected.id;
+  say("Loading aircraft…");
+  let res, body, failure = null;
+  try {
+    ({ res, data: body } = await api(`/watches/${id}/aircraft`));
+    if (!res.ok) failure = `${res.status}: ${body.error}`;
+  } catch (err) {
+    failure = err.message;
+  }
+  // The user may have picked another watch while this request was on its way.
+  if (!selected || selected.id !== id) return;
+  planes.clearLayers();   // never leave old aircraft that look live
+  if (failure) { say(failure, true); return; }
+
+  for (const a of body) {
+    if (a.lat == null || a.lon == null) continue;
+    L.circleMarker([a.lat, a.lon], { radius: 6, color: "#c0392b", fillOpacity: 0.8 })
+      .bindTooltip(`<b>${escapeHtml(a.callsign || a.icao24)}</b><br>` +
+                   `${a.altitude != null ? Math.round(a.altitude) + " m" : "on ground"}` +
+                   `${a.velocity != null ? ", " + Math.round(a.velocity * 3.6) + " km/h" : ""}`)
+      .addTo(planes);
+  }
+  if (fit && body.length && selected.kind !== "bbox") {
+    map.fitBounds(planes.getLayers().map((m) => m.getLatLng()), { padding: [40, 40], maxZoom: 10 });
+  }
+  const cache = res.headers.get("X-Cache");
+  const time = new Date().toLocaleTimeString();
+  say(`${body.length} aircraft · ${time}` + (cache ? ` · cache ${cache}` : ""));
+}
+
+// --- new watch form ---------------------------------------------------------
+const form = $("new");
+form.kind.onchange = () => {
+  const k = form.kind.value;
+  form.airport.hidden = k !== "airport";
+  form.icao24.hidden = k !== "aircraft";
+  form.querySelectorAll("[data-bbox]").forEach((el) => el.hidden = k !== "bbox");
+};
+
+// --- draw an area on the map -------------------------------------------------
+// Press the button, then press, drag and release on the map. The rectangle fills
+// the lat/lon boxes, which stay editable.
+let drawing = false, start = null, drawn = null;
+
+$("draw").onclick = () => {
+  drawing = !drawing;
+  $("draw").classList.toggle("on", drawing);
+  $("draw").textContent = drawing ? "Drag on the map… (click to cancel)" : "▭ Draw area on map";
+  map.getContainer().classList.toggle("drawing", drawing);
+  drawing ? map.dragging.disable() : map.dragging.enable();
+};
+
+map.on("mousedown", (e) => {
+  if (!drawing) return;
+  start = e.latlng;
+  if (drawn) map.removeLayer(drawn);
+  drawn = L.rectangle([start, start], { color: "#1f4e79", weight: 2, dashArray: "4" }).addTo(map);
+});
+
+map.on("mousemove", (e) => {
+  if (drawing && start) drawn.setBounds([start, e.latlng]);
+});
+
+map.on("mouseup", (e) => {
+  if (!drawing || !start) return;
+  const b = L.latLngBounds(start, e.latlng);
+  start = null;
+  const r = (x) => x.toFixed(3);
+  form.lamin.value = r(b.getSouth()); form.lamax.value = r(b.getNorth());
+  form.lomin.value = r(b.getWest());  form.lomax.value = r(b.getEast());
+  $("draw").onclick();   // leave drawing mode, keep the rectangle visible
+});
+
+function clearDrawn() { if (drawn) { map.removeLayer(drawn); drawn = null; } }
+
+// One-click examples for the demo; they go through the same POST /watches.
+const EXAMPLES = [
+  { label: "Istanbul Airport", body: { name: "Istanbul Airport", kind: "airport", airport: "LTFM" } },
+  { label: "Sabiha Gökçen", body: { name: "Sabiha Gökçen", kind: "airport", airport: "LTFJ" } },
+  { label: "Marmara area", body: { name: "Marmara area", kind: "bbox",
+      bbox: { lamin: 40.0, lomin: 26.0, lamax: 41.5, lomax: 30.0 } } },
+];
+for (const ex of EXAMPLES) {
+  const b = document.createElement("button");
+  b.textContent = "+ " + ex.label;
+  b.onclick = () => createWatch(ex.body);
+  $("examples").appendChild(b);
+}
+
+form.onsubmit = (e) => {
+  e.preventDefault();
+  const k = form.kind.value;
+  const body = { name: form.name.value, kind: k };
+  if (k === "airport") body.airport = form.airport.value;
+  if (k === "aircraft") body.icao24 = form.icao24.value;
+  if (k === "bbox") {
+    // Send only filled-in fields, so an empty box gets the server's clear
+    // "missing field" (400) instead of 0 and a confusing range error.
+    body.bbox = {};
+    for (const key of ["lamin", "lomin", "lamax", "lomax"]) {
+      if (form[key].value.trim() !== "") body.bbox[key] = Number(form[key].value);
+    }
+  }
+  createWatch(body);
+};
+
+async function createWatch(body) {
+  let res, data;
+  try {
+    ({ res, data } = await api("/watches", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    }));
+  } catch (err) {
+    say(err.message, true);
+    return;
+  }
+  if (res.status === 201) {
+    form.reset(); form.kind.onchange(); clearDrawn();
+    await loadWatches();
+    select(data);
+  } else {
+    say(`${res.status}: ${data.error}`, true);   // shows our 400/422 messages as they are
+  }
+};
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// Refreshes pause while the tab is hidden; catch up as soon as it is visible again.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && selected) showAircraft(false);
+});
+
+loadWatches();
+</script>
+</body>
+</html>
