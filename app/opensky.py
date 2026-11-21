@@ -1,15 +1,9 @@
-"""OpenSky Network client (owner: Enes).
+"""OpenSky Network client (owner: Enes) - used when FLIGHT_SOURCE=opensky.
 
-The API code only calls `get_states(watch)`.
-
-Contract:
-  get_states(watch) -> list of dicts shaped like
-      {"icao24": "4baa4e", "callsign": "THY7AB", "lat": 41.26, "lon": 28.74,
-       "altitude": 3200.0, "velocity": 140.0}
-  raises OpenSkyError when OpenSky is down, slow or rate-limited
-  (the endpoint turns that into HTTP 503).
-  raises UnknownAirportError when an airport watch has an ICAO code we have
-  no coordinates for (the endpoint turns that into HTTP 422).
+OpenSky drops connections from GCP and other cloud IP ranges, so on GKE the
+default source is adsb.lol (app/adsblol.py). This client still works from a
+home/university connection, e.g. for a collector running outside GCP.
+Contract and shared errors: see app/flightdata.py.
 
 Authentication: if OPENSKY_CLIENT_ID and OPENSKY_CLIENT_SECRET are set, an
 OAuth2 client-credentials token is fetched and cached until shortly before it
@@ -20,15 +14,14 @@ Settings (environment variables, see .env.example):
   OPENSKY_CLIENT_ID / OPENSKY_CLIENT_SECRET  API client credentials (optional)
   OPENSKY_TIMEOUT          seconds per HTTP request          (default 10)
   OPENSKY_RETRIES          extra attempts on network/5xx     (default 2)
-  OPENSKY_AIRPORT_RADIUS   half-size in degrees of the box
-                           drawn around an airport           (default 0.5)
 """
 import os
 import threading
 import time
 
-import airportsdata
 import requests
+
+from .flightdata import FlightDataError, UnknownAirportError, watch_bbox  # noqa: F401
 
 API_URL = "https://opensky-network.org/api/states/all"
 TOKEN_URL = ("https://auth.opensky-network.org/auth/realms/opensky-network"
@@ -38,45 +31,19 @@ TOKEN_URL = ("https://auth.opensky-network.org/auth/realms/opensky-network"
 ICAO24, CALLSIGN, LON, LAT, BARO_ALT, VELOCITY, GEO_ALT = 0, 1, 5, 6, 7, 9, 13
 
 
-class OpenSkyError(Exception):
+class OpenSkyError(FlightDataError):
     """OpenSky could not be reached or refused the request."""
-
-
-class UnknownAirportError(Exception):
-    """No coordinates are known for the airport code of a watch."""
 
 
 def _setting(name, default, cast):
     return cast(os.getenv(name, default))
 
 
-# ---------------------------------------------------------------- airports
-
-_airports = None
-
-
-def airport_bbox(code):
-    """Square box (lamin, lomin, lamax, lomax) around an ICAO airport code."""
-    global _airports
-    if _airports is None:
-        _airports = airportsdata.load("ICAO")   # ~28k airports, offline data
-    airport = _airports.get(code)
-    if airport is None:
-        raise UnknownAirportError(f"unknown airport code: {code}")
-    r = _setting("OPENSKY_AIRPORT_RADIUS", "0.5", float)
-    lat, lon = airport["lat"], airport["lon"]
-    return (max(lat - r, -90.0), max(lon - r, -180.0),
-            min(lat + r, 90.0), min(lon + r, 180.0))
-
-
 def query_params(watch):
     """OpenSky query string parameters for a watch."""
     if watch.kind == "aircraft":
         return {"icao24": watch.icao24}
-    if watch.kind == "airport":
-        lamin, lomin, lamax, lomax = airport_bbox(watch.airport)
-    else:
-        lamin, lomin, lamax, lomax = watch.lamin, watch.lomin, watch.lamax, watch.lomax
+    lamin, lomin, lamax, lomax = watch_bbox(watch)
     return {"lamin": lamin, "lomin": lomin, "lamax": lamax, "lomax": lomax}
 
 

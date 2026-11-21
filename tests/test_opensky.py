@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import requests
 
-from app import create_app, opensky
+from app import create_app, flightdata, opensky
 
 
 class FakeResponse:
@@ -112,9 +112,9 @@ def cached_client(monkeypatch):
         calls.append(w.id)
         return [{"icao24": "4baa4e", "callsign": "THY7AB", "lat": 41.26, "lon": 28.74,
                  "altitude": 3200.0, "velocity": 140.0}]
-    monkeypatch.setattr(opensky, "get_states", fake)
+    monkeypatch.setattr(flightdata, "get_states", fake)
     app = create_app({"SQLALCHEMY_DATABASE_URI": "sqlite:///:memory:", "TESTING": True,
-                      "OPENSKY_CACHE_SECONDS": 60})
+                      "FLIGHT_CACHE_SECONDS": 60})
     return app.test_client(), calls
 
 
