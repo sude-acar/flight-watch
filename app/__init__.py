@@ -28,8 +28,10 @@ def create_app(config=None):
         app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"creator": _cloud_sql_creator(instance)}
     else:
         app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///flightwatch.db")
-    # Reuse an OpenSky fetch for this many seconds (0 = no cache).
-    app.config["OPENSKY_CACHE_SECONDS"] = int(os.getenv("OPENSKY_CACHE_SECONDS", "15"))
+    # Reuse a flight data fetch for this many seconds (0 = no cache).
+    # OPENSKY_CACHE_SECONDS is the old name, still read for existing .env files.
+    app.config["FLIGHT_CACHE_SECONDS"] = int(
+        os.getenv("FLIGHT_CACHE_SECONDS") or os.getenv("OPENSKY_CACHE_SECONDS") or "15")
     if config:
         app.config.update(config)
 

@@ -5,7 +5,7 @@ Status code rules:
   400 - body is not JSON, or a required field is missing
   422 - fields are present but a value is invalid (e.g. latitude 95)
   404 - no watch with that id
-  503 - OpenSky is unavailable
+  503 - the flight data source (adsb.lol or OpenSky) is unavailable
 """
 import re
 from datetime import datetime, timedelta, timezone
@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from flask import Blueprint, current_app, jsonify, request
 from sqlalchemy import func
 
-from . import opensky
+from . import flightdata
 from .models import AircraftSnapshot, Watch, db, utcnow
 
 bp = Blueprint("watches", __name__, url_prefix="/watches")
@@ -135,12 +135,12 @@ def delete_watch(watch_id):
 
 def cached_snapshots(watch):
     """Snapshots of the latest fetch for `watch` if it is younger than
-    OPENSKY_CACHE_SECONDS, else None. The cache lives in the database, so it is
+    FLIGHT_CACHE_SECONDS, else None. The cache lives in the database, so it is
     shared by every pod behind the load balancer.
 
     A fetch that returned no aircraft stores no rows, so it is not cached.
     """
-    max_age = current_app.config["OPENSKY_CACHE_SECONDS"]
+    max_age = current_app.config["FLIGHT_CACHE_SECONDS"]
     if max_age <= 0:
         return None
     latest = (db.session.query(func.max(AircraftSnapshot.fetched_at))
@@ -158,8 +158,8 @@ def cached_snapshots(watch):
 
 @bp.get("/<int:watch_id>/aircraft")
 def watch_aircraft(watch_id):
-    """Live aircraft for a watch. Each OpenSky fetch is stored as snapshots;
-    a repeat request within OPENSKY_CACHE_SECONDS is served from those
+    """Live aircraft for a watch. Each flight data fetch is stored as snapshots;
+    a repeat request within FLIGHT_CACHE_SECONDS is served from those
     snapshots instead (response header X-Cache: HIT / MISS)."""
     watch = db.session.get(Watch, watch_id)
     if watch is None:
@@ -170,11 +170,11 @@ def watch_aircraft(watch_id):
         return jsonify([s.to_dict() for s in cached]), 200, {"X-Cache": "HIT"}
 
     try:
-        states = opensky.get_states(watch)
-    except opensky.UnknownAirportError as exc:
+        states = flightdata.get_states(watch)
+    except flightdata.UnknownAirportError as exc:
         return error(str(exc), 422)
-    except opensky.OpenSkyError as exc:
-        return error(f"OpenSky unavailable: {exc}", 503)
+    except flightdata.FlightDataError as exc:
+        return error(f"flight data unavailable: {exc}", 503)
 
     now = utcnow()   # one timestamp per fetch, so the batch can be found again
     snapshots = [AircraftSnapshot(watch_id=watch.id, fetched_at=now, **s) for s in states]

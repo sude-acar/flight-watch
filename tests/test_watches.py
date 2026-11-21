@@ -15,10 +15,10 @@ FAKE_STATES = [
 @pytest.fixture
 def client(monkeypatch):
     """Test client with an in-memory DB, no OpenSky cache and a fake OpenSky."""
-    from app import opensky
-    monkeypatch.setattr(opensky, "get_states", lambda watch: [dict(s) for s in FAKE_STATES])
+    from app import flightdata
+    monkeypatch.setattr(flightdata, "get_states", lambda watch: [dict(s) for s in FAKE_STATES])
     app = create_app({"SQLALCHEMY_DATABASE_URI": "sqlite:///:memory:", "TESTING": True,
-                      "OPENSKY_CACHE_SECONDS": 0})
+                      "FLIGHT_CACHE_SECONDS": 0})
     return app.test_client()
 
 
@@ -80,12 +80,12 @@ def test_aircraft_and_history(client, monkeypatch):
     assert client.get(f"/watches/{wid}/history?limit=0").status_code == 422
     assert client.get("/watches/999/aircraft").status_code == 404
 
-    from app import opensky
+    from app import flightdata
 
     def down(watch):
-        """Fake OpenSky that always fails."""
-        raise opensky.OpenSkyError("timeout")
-    monkeypatch.setattr(opensky, "get_states", down)
+        """Fake flight data source that always fails."""
+        raise flightdata.FlightDataError("timeout")
+    monkeypatch.setattr(flightdata, "get_states", down)
     assert client.get(f"/watches/{wid}/aircraft").status_code == 503
 
 

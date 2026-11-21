@@ -19,11 +19,13 @@ spec:
           ports:
             - containerPort: 8080
           env:
-            - name: OPENSKY_CACHE_SECONDS
-              value: "15"
+            - name: FLIGHT_SOURCE              # OpenSky blocks GCP IPs, so adsb.lol here
+              value: adsblol
+            - name: FLIGHT_CACHE_SECONDS       # adsb.lol: 500 requests/day per IP without a key
+              value: "60"
           envFrom:
             - secretRef:
-                name: flightwatch-secrets    # INSTANCE_CONNECTION_NAME, DB_*, OPENSKY_CLIENT_*
+                name: flightwatch-secrets    # INSTANCE_CONNECTION_NAME, DB_*, optional ADSBLOL_API_KEY
           resources:                         # HPA scales on CPU relative to this request
             requests: {cpu: 250m, memory: 512Mi}
             limits: {cpu: 500m, memory: 512Mi}
